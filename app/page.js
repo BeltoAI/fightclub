@@ -10,8 +10,16 @@ import useWebLLM from "@/hooks/useWebLLM";
 const EMOJIS = ["😤", "👊", "🔥", "💀", "🐍", "🦈", "👹", "🤡", "💣", "⚡"];
 
 export default function Home() {
-  // ── Auth state ──────────────────────────────────────────────────
-  const [user, setUser] = useState(null);
+  // ── Auth state (restore from sessionStorage on page reload / Stripe redirect) ──
+  const [user, setUser] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = sessionStorage.getItem("fightclub_user");
+        return saved ? JSON.parse(saved) : null;
+      } catch { return null; }
+    }
+    return null;
+  });
   const [loginForm, setLoginForm] = useState({
     username: "",
     floor: 1,
@@ -32,6 +40,13 @@ export default function Home() {
   // ── Subscription state ─────────────────────────────────────────
   const [subStatus, setSubStatus] = useState(null); // null = loading, object = loaded
   const [subChecked, setSubChecked] = useState(false);
+
+  // ── Persist user to sessionStorage (survives Stripe redirect) ──
+  useEffect(() => {
+    if (user) {
+      sessionStorage.setItem("fightclub_user", JSON.stringify(user));
+    }
+  }, [user]);
 
   // ── WebLLM ─────────────────────────────────────────────────────
   const {
@@ -109,13 +124,34 @@ export default function Home() {
 
     checkSub();
 
-    // Also check for ?subscription=success in URL (returning from Stripe)
+    // Handle return from Stripe Checkout
     const params = new URLSearchParams(window.location.search);
     if (params.get("subscription") === "success") {
-      // Re-check after a brief delay to let the webhook fire
-      setTimeout(checkSub, 2000);
-      // Clean URL
+      const sessionId = params.get("session_id");
+      // Clean URL immediately
       window.history.replaceState({}, "", "/");
+
+      if (sessionId) {
+        // Verify the session directly with Stripe (don't wait for webhook)
+        fetch("/api/stripe/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, userId: user._id }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.success) {
+              setSubStatus({ isActive: true });
+              setSubChecked(true);
+            } else {
+              // Fallback: re-check status after delay
+              setTimeout(checkSub, 2000);
+            }
+          })
+          .catch(() => setTimeout(checkSub, 2000));
+      } else {
+        setTimeout(checkSub, 2000);
+      }
     }
   }, [user]);
 
