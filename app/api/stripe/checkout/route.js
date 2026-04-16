@@ -42,7 +42,9 @@ export async function POST(req) {
       await user.save();
     }
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    // Derive the app URL from the request origin — more reliable than env vars on Vercel
+    const origin = req.headers.get("origin") || req.headers.get("referer")?.replace(/\/$/, "") || process.env.NEXT_PUBLIC_APP_URL || "https://idle-fight-club.vercel.app";
+    const appUrl = origin.replace(/\/$/, "");
 
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
