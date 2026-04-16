@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import stripe, { PRICE_IDS } from "@/lib/stripe";
+import getStripe, { PRICE_IDS } from "@/lib/stripe";
 import dbConnect from "@/lib/mongodb";
 import User from "@/models/User";
 
@@ -20,6 +20,8 @@ export async function POST(req) {
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
+
+    const stripe = getStripe();
 
     // Reuse existing Stripe customer or create a new one
     let customerId = user.stripeCustomerId;

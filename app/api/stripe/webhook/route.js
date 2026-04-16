@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import stripe from "@/lib/stripe";
+import getStripe from "@/lib/stripe";
 import dbConnect from "@/lib/mongodb";
 import User from "@/models/User";
 
@@ -17,6 +17,8 @@ export async function POST(req) {
       { status: 400 }
     );
   }
+
+  const stripe = getStripe();
 
   let event;
   try {
