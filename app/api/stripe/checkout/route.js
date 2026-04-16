@@ -59,7 +59,8 @@ export async function POST(req) {
 
     return NextResponse.json({ url: session.url });
   } catch (err) {
-    console.error("Stripe checkout error:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error("Stripe checkout error:", err?.type, err?.code, err?.message);
+    const msg = err?.raw?.message || err?.message || "Unknown Stripe error";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
