@@ -13,7 +13,7 @@ export async function GET() {
   }
 }
 
-// POST /api/users — register / login a user
+// POST /api/users — register / login a user + set persistent cookie
 export async function POST(req) {
   try {
     await dbConnect();
@@ -48,15 +48,31 @@ export async function POST(req) {
       });
     }
 
-    return NextResponse.json(user, { status: 201 });
+    // Set a persistent cookie so user stays logged in
+    const res = NextResponse.json(user, { status: 201 });
+    res.cookies.set("fightclub_uid", user._id.toString(), {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 60 * 60 * 24 * 400, // 400 days
+      path: "/",
+    });
+    return res;
   } catch (err) {
     if (err.code === 11000) {
-      // Duplicate key — race condition on create
       const user = await User.findOne({ username: err.keyValue?.username });
       if (user) {
         user.isOnline = true;
         await user.save();
-        return NextResponse.json(user, { status: 200 });
+        const res = NextResponse.json(user, { status: 200 });
+        res.cookies.set("fightclub_uid", user._id.toString(), {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+          maxAge: 60 * 60 * 24 * 400,
+          path: "/",
+        });
+        return res;
       }
     }
     return NextResponse.json({ error: err.message }, { status: 500 });

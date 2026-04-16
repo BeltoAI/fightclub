@@ -10,16 +10,9 @@ import useWebLLM from "@/hooks/useWebLLM";
 const EMOJIS = ["😤", "👊", "🔥", "💀", "🐍", "🦈", "👹", "🤡", "💣", "⚡"];
 
 export default function Home() {
-  // ── Auth state (restore from sessionStorage on page reload / Stripe redirect) ──
-  const [user, setUser] = useState(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = sessionStorage.getItem("fightclub_user");
-        return saved ? JSON.parse(saved) : null;
-      } catch { return null; }
-    }
-    return null;
-  });
+  // ── Auth state ─────────────────────────────────────────────────
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true); // true until cookie check done
   const [loginForm, setLoginForm] = useState({
     username: "",
     floor: 1,
@@ -27,7 +20,7 @@ export default function Home() {
   });
   const [loginError, setLoginError] = useState("");
 
-  // ── Game state ──────────────────────────────────────────────────
+  // ── Game state ─────────────────────────────────────────────────
   const [allUsers, setAllUsers] = useState([]);
   const [dramaLogs, setDramaLogs] = useState([]);
   const [encounterTarget, setEncounterTarget] = useState(null);
@@ -35,18 +28,12 @@ export default function Home() {
   const [showDrama, setShowDrama] = useState(false);
   const [awayPrompt, setAwayPrompt] = useState("");
   const [showSettings, setShowSettings] = useState(false);
-  const [tab, setTab] = useState("grid"); // "grid" | "feed" | "my-drama"
+  const [tab, setTab] = useState("grid");
+  const [showTutorial, setShowTutorial] = useState(false);
 
   // ── Subscription state ─────────────────────────────────────────
-  const [subStatus, setSubStatus] = useState(null); // null = loading, object = loaded
+  const [subStatus, setSubStatus] = useState(null);
   const [subChecked, setSubChecked] = useState(false);
-
-  // ── Persist user to sessionStorage (survives Stripe redirect) ──
-  useEffect(() => {
-    if (user) {
-      sessionStorage.setItem("fightclub_user", JSON.stringify(user));
-    }
-  }, [user]);
 
   // ── WebLLM ─────────────────────────────────────────────────────
   const {
@@ -61,49 +48,52 @@ export default function Home() {
 
   const moveThrottleRef = useRef(false);
 
-  // ── Fetch all users (polling) ──────────────────────────────────
-  const fetchUsers = useCallback(async () => {
-    try {
-      const res = await fetch("/api/users");
-      if (res.ok) {
-        const data = await res.json();
-        setAllUsers(data);
+  // ══════════════════════════════════════════════════════════════════
+  //  AUTO-LOGIN: check cookie on page load
+  // ══════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    async function autoLogin() {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user) {
+            setUser(data.user);
+            setAwayPrompt(data.user.awayPrompt || "");
+          }
+        }
+      } catch (e) {
+        console.error("Auto-login failed:", e);
       }
-    } catch (e) {
-      console.error("Failed to fetch users:", e);
+      setAuthLoading(false);
     }
+    autoLogin();
   }, []);
 
-  // ── Fetch drama logs ───────────────────────────────────────────
-  const fetchDrama = useCallback(async () => {
-    try {
-      const res = await fetch("/api/drama");
-      if (res.ok) setDramaLogs(await res.json());
-    } catch (e) {
-      console.error("Failed to fetch drama:", e);
-    }
-  }, []);
-
-  // ── Start AI engine once subscription is confirmed ──────────────
+  // ── Also persist to sessionStorage for Stripe redirect ─────────
   useEffect(() => {
-    if (user && subStatus?.isActive && !isLoaded && !isLoading) {
-      initEngine();
+    if (user) {
+      sessionStorage.setItem("fightclub_user", JSON.stringify(user));
     }
-  }, [user, subStatus, isLoaded, isLoading, initEngine]);
+  }, [user]);
 
-  // ── Polling ────────────────────────────────────────────────────
+  // ── Restore from sessionStorage if cookie check returned null ──
+  // (handles the Stripe redirect case where cookie might not be set yet)
   useEffect(() => {
-    if (!user) return;
-    fetchUsers();
-    fetchDrama();
-    const interval = setInterval(() => {
-      fetchUsers();
-      fetchDrama();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [user, fetchUsers, fetchDrama]);
+    if (!authLoading && !user) {
+      try {
+        const saved = sessionStorage.getItem("fightclub_user");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?._id) setUser(parsed);
+        }
+      } catch {}
+    }
+  }, [authLoading, user]);
 
-  // ── Check subscription after login ──────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+  //  SUBSCRIPTION CHECK
+  // ══════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!user) return;
 
@@ -116,8 +106,7 @@ export default function Home() {
         }
       } catch (e) {
         console.error("Subscription check failed:", e);
-        // Let them through on error (fail open for now)
-        setSubStatus({ isActive: true });
+        setSubStatus({ isActive: true }); // fail open
       }
       setSubChecked(true);
     }
@@ -128,34 +117,70 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("subscription") === "success") {
       const sessionId = params.get("session_id");
-      // Clean URL immediately
       window.history.replaceState({}, "", "/");
 
       if (sessionId) {
-        // Verify the session directly with Stripe (don't wait for webhook)
         fetch("/api/stripe/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId, userId: user._id }),
         })
-          .then((res) => res.json())
+          .then((r) => r.json())
           .then((data) => {
             if (data.success) {
               setSubStatus({ isActive: true });
               setSubChecked(true);
             } else {
-              // Fallback: re-check status after delay
               setTimeout(checkSub, 2000);
             }
           })
           .catch(() => setTimeout(checkSub, 2000));
-      } else {
-        setTimeout(checkSub, 2000);
       }
     }
   }, [user]);
 
-  // ── Login / Register ───────────────────────────────────────────
+  // ── Start AI engine once subscription is confirmed ─────────────
+  useEffect(() => {
+    if (user && subStatus?.isActive && !isLoaded && !isLoading) {
+      initEngine();
+    }
+  }, [user, subStatus, isLoaded, isLoading, initEngine]);
+
+  // ══════════════════════════════════════════════════════════════════
+  //  POLLING
+  // ══════════════════════════════════════════════════════════════════
+  const fetchUsers = useCallback(async () => {
+    try {
+      const res = await fetch("/api/users");
+      if (res.ok) setAllUsers(await res.json());
+    } catch (e) {
+      console.error("Failed to fetch users:", e);
+    }
+  }, []);
+
+  const fetchDrama = useCallback(async () => {
+    try {
+      const res = await fetch("/api/drama");
+      if (res.ok) setDramaLogs(await res.json());
+    } catch (e) {
+      console.error("Failed to fetch drama:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchUsers();
+    fetchDrama();
+    const interval = setInterval(() => {
+      fetchUsers();
+      fetchDrama();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [user, fetchUsers, fetchDrama]);
+
+  // ══════════════════════════════════════════════════════════════════
+  //  LOGIN / LOGOUT
+  // ══════════════════════════════════════════════════════════════════
   async function handleLogin(e) {
     e.preventDefault();
     setLoginError("");
@@ -181,17 +206,28 @@ export default function Home() {
       const data = await res.json();
       setUser(data);
       setAwayPrompt(data.awayPrompt || "");
-
-      // Don't init AI engine yet — wait for subscription check
+      setShowTutorial(true); // show tutorial for new users
     } catch (err) {
       setLoginError("Network error. Try again.");
     }
   }
 
-  // ── Movement ───────────────────────────────────────────────────
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {}
+    setUser(null);
+    setSubStatus(null);
+    setSubChecked(false);
+    sessionStorage.removeItem("fightclub_user");
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  MOVEMENT
+  // ══════════════════════════════════════════════════════════════════
   const moveUser = useCallback(
     async (dx, dy) => {
-      if (!user || moveThrottleRef.current || isGenerating) return;
+      if (!user || !user.isOnline || moveThrottleRef.current || isGenerating) return;
       moveThrottleRef.current = true;
 
       const newX = Math.max(0, Math.min(19, user.x + dx));
@@ -202,7 +238,6 @@ export default function Home() {
         return;
       }
 
-      // Optimistic update
       setUser((prev) => ({ ...prev, x: newX, y: newY }));
 
       try {
@@ -219,34 +254,34 @@ export default function Home() {
         console.error("Move failed:", e);
       }
 
-      // Check for adjacent offline users
       checkEncounters(newX, newY);
 
       setTimeout(() => {
         moveThrottleRef.current = false;
       }, 120);
     },
-    [user, allUsers, isGenerating]
+    [user, allUsers, isGenerating, isLoaded, showDrama]
   );
 
-  // ── Encounter detection ────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+  //  ENCOUNTER DETECTION & AI FIGHT
+  // ══════════════════════════════════════════════════════════════════
   function checkEncounters(px, py) {
-    if (isGenerating || showDrama) return;
+    if (isGenerating || showDrama || !isLoaded) return;
 
     const adjacent = allUsers.find((u) => {
       if (u._id === user._id) return false;
-      if (u.isOnline) return false; // only fight offline users
+      if (u.isOnline) return false;
       const dx = Math.abs(u.x - px);
       const dy = Math.abs(u.y - py);
       return dx <= 1 && dy <= 1 && !(dx === 0 && dy === 0);
     });
 
-    if (adjacent && isLoaded) {
+    if (adjacent) {
       triggerEncounter(adjacent);
     }
   }
 
-  // ── Trigger AI encounter ───────────────────────────────────────
   async function triggerEncounter(target) {
     setEncounterTarget(target);
     setCurrentDrama("");
@@ -260,7 +295,6 @@ export default function Home() {
       const transcript = await generateTrashTalk(defenderPrompt, attackerContext);
       setCurrentDrama(transcript);
 
-      // Save to DB
       await fetch("/api/drama", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -274,39 +308,29 @@ export default function Home() {
         }),
       });
 
-      // Refresh drama feed
       fetchDrama();
     } catch (err) {
       setCurrentDrama("*The AI choked on its own insult and passed out*");
     }
   }
 
-  // ── Keyboard handler ───────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+  //  KEYBOARD HANDLER
+  // ══════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!user) return;
 
     function handleKey(e) {
-      switch (e.key) {
-        case "ArrowUp":
-        case "w":
-          e.preventDefault();
-          moveUser(0, -1);
-          break;
-        case "ArrowDown":
-        case "s":
-          e.preventDefault();
-          moveUser(0, 1);
-          break;
-        case "ArrowLeft":
-        case "a":
-          e.preventDefault();
-          moveUser(-1, 0);
-          break;
-        case "ArrowRight":
-        case "d":
-          e.preventDefault();
-          moveUser(1, 0);
-          break;
+      const moves = {
+        ArrowUp: [0, -1], w: [0, -1],
+        ArrowDown: [0, 1], s: [0, 1],
+        ArrowLeft: [-1, 0], a: [-1, 0],
+        ArrowRight: [1, 0], d: [1, 0],
+      };
+      const m = moves[e.key];
+      if (m) {
+        e.preventDefault();
+        moveUser(m[0], m[1]);
       }
     }
 
@@ -314,7 +338,9 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [user, moveUser]);
 
-  // ── Update away prompt ─────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+  //  AWAY PROMPT + ONLINE/OFFLINE TOGGLE
+  // ══════════════════════════════════════════════════════════════════
   async function saveAwayPrompt() {
     if (!user) return;
     try {
@@ -333,7 +359,6 @@ export default function Home() {
     }
   }
 
-  // ── Toggle online/offline ──────────────────────────────────────
   async function toggleOnline() {
     if (!user) return;
     try {
@@ -351,16 +376,28 @@ export default function Home() {
     }
   }
 
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
   //  RENDER
-  // ═════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════
 
-  // ── Paywall Gate ────────────────────────────────────────────────
+  // ── Initial auth loading ───────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0a0a0f]">
+        <div className="text-center">
+          <h1 className="text-pink-500 text-lg mb-3">IDLE FIGHT CLUB</h1>
+          <p className="text-gray-500 text-[10px] animate-pulse">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Paywall ────────────────────────────────────────────────────
   if (user && subChecked && !subStatus?.isActive) {
     return <Paywall userId={user._id} />;
   }
 
-  // ── Loading sub check ─────────────────────────────────────────
+  // ── Sub check loading ─────────────────────────────────────────
   if (user && !subChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -369,7 +406,7 @@ export default function Home() {
     );
   }
 
-  // ── Loading Screen (WebLLM downloading) ────────────────────────
+  // ── WebLLM Loading Screen ─────────────────────────────────────
   if (user && isLoading) {
     return <LoadingScreen progress={initProgress} />;
   }
@@ -378,30 +415,45 @@ export default function Home() {
   if (!user) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-4">
-        <h1 className="text-pink-500 text-xl mb-2 text-center">
+        <h1 className="text-pink-500 text-xl mb-1 text-center">
           IDLE FIGHT CLUB
         </h1>
-        <p className="text-gray-500 text-[9px] mb-8 text-center max-w-sm">
-          An async, AI-powered drama engine for your apartment complex.
-          <br />
-          Pick a name. Pick a floor. Start beef.
+        <p className="text-gray-500 text-[9px] mb-6 text-center max-w-sm">
+          The AI-powered drama engine for your apartment complex.
         </p>
+
+        {/* How it works */}
+        <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-4 w-full max-w-sm mb-4 space-y-2">
+          <p className="text-cyan-400 text-[9px] font-bold mb-2">HOW IT WORKS</p>
+          <div className="flex items-start gap-2">
+            <span className="text-pink-400 text-[10px]">1.</span>
+            <p className="text-gray-400 text-[9px]">Pick a name, floor & avatar. No real names.</p>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-pink-400 text-[10px]">2.</span>
+            <p className="text-gray-400 text-[9px]">Move around the grid with arrow keys or WASD.</p>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-pink-400 text-[10px]">3.</span>
+            <p className="text-gray-400 text-[9px]">Walk next to an offline player's avatar to trigger an AI fight.</p>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="text-pink-400 text-[10px]">4.</span>
+            <p className="text-gray-400 text-[9px]">Go offline with a custom personality — your AI avatar roams and fights for you.</p>
+          </div>
+        </div>
 
         <form
           onSubmit={handleLogin}
           className="bg-gray-900 border border-pink-800/50 rounded-lg p-6 w-full max-w-sm space-y-4"
         >
           <div>
-            <label className="block text-[9px] text-gray-400 mb-1">
-              USERNAME (no real names)
-            </label>
+            <label className="block text-[9px] text-gray-400 mb-1">USERNAME</label>
             <input
               type="text"
               maxLength={24}
               value={loginForm.username}
-              onChange={(e) =>
-                setLoginForm((f) => ({ ...f, username: e.target.value }))
-              }
+              onChange={(e) => setLoginForm((f) => ({ ...f, username: e.target.value }))}
               className="w-full bg-black border border-gray-700 rounded px-3 py-2 text-cyan-400 text-xs focus:border-pink-500 focus:outline-none"
               placeholder="xX_FloorBoss_Xx"
               autoFocus
@@ -409,40 +461,36 @@ export default function Home() {
           </div>
 
           <div>
-            <label className="block text-[9px] text-gray-400 mb-1">
-              FLOOR (1-7)
-            </label>
-            <select
-              value={loginForm.floor}
-              onChange={(e) =>
-                setLoginForm((f) => ({
-                  ...f,
-                  floor: parseInt(e.target.value),
-                }))
-              }
-              className="w-full bg-black border border-gray-700 rounded px-3 py-2 text-cyan-400 text-xs focus:border-pink-500 focus:outline-none"
-            >
+            <label className="block text-[9px] text-gray-400 mb-1">FLOOR (1-7)</label>
+            <div className="flex gap-1">
               {[1, 2, 3, 4, 5, 6, 7].map((f) => (
-                <option key={f} value={f}>
-                  Floor {f}
-                </option>
+                <button
+                  type="button"
+                  key={f}
+                  onClick={() => setLoginForm((prev) => ({ ...prev, floor: f }))}
+                  className={`flex-1 py-2 rounded text-xs transition-colors ${
+                    loginForm.floor === f
+                      ? "bg-pink-700 text-white"
+                      : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                  }`}
+                >
+                  {f}
+                </button>
               ))}
-            </select>
+            </div>
           </div>
 
           <div>
-            <label className="block text-[9px] text-gray-400 mb-1">
-              AVATAR
-            </label>
+            <label className="block text-[9px] text-gray-400 mb-1">AVATAR</label>
             <div className="flex flex-wrap gap-2">
               {EMOJIS.map((em) => (
                 <button
                   type="button"
                   key={em}
                   onClick={() => setLoginForm((f) => ({ ...f, emoji: em }))}
-                  className={`text-xl p-1 rounded ${
+                  className={`text-xl p-1 rounded transition-all ${
                     loginForm.emoji === em
-                      ? "bg-pink-900 ring-2 ring-pink-400"
+                      ? "bg-pink-900 ring-2 ring-pink-400 scale-110"
                       : "bg-gray-800 hover:bg-gray-700"
                   }`}
                 >
@@ -452,58 +500,56 @@ export default function Home() {
             </div>
           </div>
 
-          {loginError && (
-            <p className="text-red-400 text-[9px]">{loginError}</p>
-          )}
+          {loginError && <p className="text-red-400 text-[9px]">{loginError}</p>}
 
           <button
             type="submit"
-            className="w-full bg-pink-600 hover:bg-pink-500 text-white py-2 rounded text-xs transition-colors"
+            className="w-full bg-pink-600 hover:bg-pink-500 text-white py-3 rounded text-xs transition-colors"
           >
             ENTER THE COMPLEX
           </button>
         </form>
 
-        <p className="text-gray-600 text-[8px] mt-4 text-center">
-          Requires Chrome 113+ with WebGPU support
+        <p className="text-gray-600 text-[8px] mt-3 text-center">
+          Requires Chrome 113+ with WebGPU
         </p>
       </div>
     );
   }
 
-  // ── Main Game Screen ───────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════
+  //  MAIN GAME SCREEN
+  // ══════════════════════════════════════════════════════════════════
+  const offlineCount = allUsers.filter((u) => !u.isOnline).length;
+  const onlineCount = allUsers.filter((u) => u.isOnline).length;
+
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
+      {/* ── Header ── */}
       <header className="flex items-center justify-between p-3 border-b border-pink-900/40">
         <div className="flex items-center gap-3">
           <h1 className="text-pink-500 text-xs">IDLE FIGHT CLUB</h1>
           <span className="text-[8px] text-gray-500">
-            {allUsers.length} residents
+            {onlineCount} online / {offlineCount} sleeping
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className={`inline-block w-2 h-2 rounded-full ${
-              user.isOnline ? "bg-green-400" : "bg-gray-600"
-            }`}
-          />
+          <span className={`inline-block w-2 h-2 rounded-full ${user.isOnline ? "bg-green-400" : "bg-gray-600"}`} />
           <span className="text-[9px] text-cyan-400">{user.username}</span>
           <span className="text-[9px] text-gray-500">F{user.floor}</span>
-          {isLoaded && (
-            <span className="text-[8px] text-green-500">AI READY</span>
-          )}
-          {llmError && (
-            <span className="text-[8px] text-red-400">AI ERROR</span>
-          )}
+          <span className="text-[8px] text-gray-600">W:{user.wins || 0} L:{user.losses || 0}</span>
+          {isLoaded && <span className="text-[8px] text-green-500">AI READY</span>}
+          {llmError && <span className="text-[8px] text-red-400" title={llmError}>AI ERR</span>}
+          <button onClick={() => setShowTutorial(true)} className="text-[9px] text-gray-500 hover:text-cyan-400" title="How to play">?</button>
+          <button onClick={handleLogout} className="text-[9px] text-gray-500 hover:text-red-400" title="Logout">EXIT</button>
         </div>
       </header>
 
-      {/* Tab bar */}
+      {/* ── Tab bar ── */}
       <div className="flex border-b border-gray-800">
         {[
           { id: "grid", label: "THE GRID" },
-          { id: "feed", label: "DRAMA FEED" },
+          { id: "feed", label: `DRAMA FEED (${dramaLogs.length})` },
           { id: "my-drama", label: "MY BEEF" },
         ].map((t) => (
           <button
@@ -520,121 +566,125 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Content area */}
+      {/* ── Content ── */}
       <div className="flex-1 p-4">
         {/* ── Grid Tab ── */}
         {tab === "grid" && (
           <div className="flex flex-col items-center gap-4">
+            {/* Status banner */}
+            {!user.isOnline && (
+              <div className="w-full max-w-[600px] bg-purple-950/50 border border-purple-600/50 rounded p-3 text-center">
+                <p className="text-purple-300 text-[10px]">
+                  You are OFFLINE — your AI avatar is roaming the grid and fighting for you.
+                </p>
+                <button onClick={toggleOnline} className="text-[9px] text-cyan-400 mt-1 underline">
+                  Go back online
+                </button>
+              </div>
+            )}
+
+            {!isLoaded && !isLoading && !llmError && (
+              <div className="w-full max-w-[600px] bg-yellow-950/30 border border-yellow-600/30 rounded p-2 text-center">
+                <p className="text-yellow-400 text-[9px]">AI engine loading... encounters will trigger once ready.</p>
+              </div>
+            )}
+
             <Grid
               users={allUsers}
               currentUserId={user._id}
               encounterTargetId={encounterTarget?._id}
             />
 
-            {/* Controls hint */}
-            <p className="text-[8px] text-gray-500 text-center">
-              Arrow keys or WASD to move. Walk next to a 💤 offline user to
-              start drama.
-            </p>
+            {/* ── Controls ── */}
+            {user.isOnline && (
+              <p className="text-[8px] text-gray-500 text-center">
+                Use arrow keys / WASD to move. Walk next to a sleeping avatar to start a fight.
+              </p>
+            )}
 
-            {/* Mobile D-pad */}
-            <div className="grid grid-cols-3 gap-1 w-32 md:hidden">
-              <div />
-              <button
-                onClick={() => moveUser(0, -1)}
-                className="bg-gray-800 rounded p-2 text-center text-xs active:bg-pink-800"
-              >
-                ▲
-              </button>
-              <div />
-              <button
-                onClick={() => moveUser(-1, 0)}
-                className="bg-gray-800 rounded p-2 text-center text-xs active:bg-pink-800"
-              >
-                ◄
-              </button>
-              <div className="bg-gray-900 rounded p-2 text-center text-[8px] text-gray-600">
-                {user.emoji}
+            {/* Mobile D-pad — always show on small screens */}
+            {user.isOnline && (
+              <div className="grid grid-cols-3 gap-1 w-36 md:hidden">
+                <div />
+                <button onClick={() => moveUser(0, -1)} className="bg-gray-800 rounded p-3 text-center text-sm active:bg-pink-800">▲</button>
+                <div />
+                <button onClick={() => moveUser(-1, 0)} className="bg-gray-800 rounded p-3 text-center text-sm active:bg-pink-800">◄</button>
+                <div className="bg-gray-900 rounded p-3 text-center text-lg">{user.emoji}</div>
+                <button onClick={() => moveUser(1, 0)} className="bg-gray-800 rounded p-3 text-center text-sm active:bg-pink-800">►</button>
+                <div />
+                <button onClick={() => moveUser(0, 1)} className="bg-gray-800 rounded p-3 text-center text-sm active:bg-pink-800">▼</button>
+                <div />
               </div>
-              <button
-                onClick={() => moveUser(1, 0)}
-                className="bg-gray-800 rounded p-2 text-center text-xs active:bg-pink-800"
-              >
-                ►
-              </button>
-              <div />
-              <button
-                onClick={() => moveUser(0, 1)}
-                className="bg-gray-800 rounded p-2 text-center text-xs active:bg-pink-800"
-              >
-                ▼
-              </button>
-              <div />
-            </div>
+            )}
 
-            {/* Quick actions */}
+            {/* ── Action buttons ── */}
             <div className="flex gap-2 flex-wrap justify-center">
-              <button
-                onClick={toggleOnline}
-                className={`text-[9px] px-3 py-1 rounded border transition-colors ${
-                  user.isOnline
-                    ? "border-green-600 text-green-400 hover:bg-green-950"
-                    : "border-gray-600 text-gray-400 hover:bg-gray-800"
-                }`}
-              >
-                {user.isOnline ? "GO OFFLINE (be a target)" : "GO ONLINE"}
-              </button>
+              {user.isOnline ? (
+                <button
+                  onClick={toggleOnline}
+                  className="text-[10px] px-4 py-2 rounded border border-purple-600 text-purple-400 hover:bg-purple-950 transition-colors"
+                >
+                  GO OFFLINE — let your AI fight for you
+                </button>
+              ) : (
+                <button
+                  onClick={toggleOnline}
+                  className="text-[10px] px-4 py-2 rounded border border-green-600 text-green-400 hover:bg-green-950 transition-colors"
+                >
+                  GO ONLINE — take back control
+                </button>
+              )}
               <button
                 onClick={() => setShowSettings((s) => !s)}
-                className="text-[9px] px-3 py-1 rounded border border-purple-600 text-purple-400 hover:bg-purple-950 transition-colors"
+                className="text-[10px] px-4 py-2 rounded border border-cyan-600 text-cyan-400 hover:bg-cyan-950 transition-colors"
               >
-                AWAY PROMPT
+                {showSettings ? "CLOSE" : "EDIT PERSONALITY"}
               </button>
             </div>
 
-            {/* Settings panel */}
+            {/* ── Away Prompt editor ── */}
             {showSettings && (
-              <div className="w-full max-w-md bg-gray-900 border border-purple-800/50 rounded-lg p-4 space-y-3">
-                <label className="block text-[9px] text-gray-400">
-                  YOUR AWAY PROMPT (this is your AI character when offline):
+              <div className="w-full max-w-md bg-gray-900 border border-cyan-800/50 rounded-lg p-4 space-y-3">
+                <label className="block text-[9px] text-cyan-400 font-bold">
+                  YOUR AI PERSONALITY
                 </label>
+                <p className="text-[8px] text-gray-500">
+                  This is who your avatar becomes when you go offline. Other players will trigger AI fights with this character.
+                </p>
                 <textarea
                   value={awayPrompt}
                   onChange={(e) => setAwayPrompt(e.target.value)}
                   maxLength={500}
                   rows={3}
-                  className="w-full bg-black border border-gray-700 rounded px-3 py-2 text-purple-400 text-[10px] focus:border-purple-500 focus:outline-none resize-none"
-                  placeholder="I am an aggressive Floor 2 resident who hates noise..."
+                  className="w-full bg-black border border-gray-700 rounded px-3 py-2 text-cyan-300 text-[10px] focus:border-cyan-500 focus:outline-none resize-none"
+                  placeholder="Example: I'm a Floor 3 night owl who blasts music at 2am and thinks everyone else is a tourist in MY building..."
                 />
                 <div className="flex justify-between items-center">
-                  <span className="text-[8px] text-gray-500">
-                    {awayPrompt.length}/500
-                  </span>
+                  <span className="text-[8px] text-gray-500">{awayPrompt.length}/500</span>
                   <button
                     onClick={saveAwayPrompt}
-                    className="text-[9px] px-4 py-1 bg-purple-600 hover:bg-purple-500 rounded transition-colors"
+                    className="text-[9px] px-4 py-1 bg-cyan-600 hover:bg-cyan-500 rounded transition-colors"
                   >
-                    SAVE
+                    SAVE PERSONALITY
                   </button>
                 </div>
               </div>
             )}
-
-            {/* Scoreboard mini */}
-            <div className="text-[8px] text-gray-500 flex gap-4">
-              <span>W: {user.wins || 0}</span>
-              <span>L: {user.losses || 0}</span>
-            </div>
           </div>
         )}
 
         {/* ── Drama Feed Tab ── */}
         {tab === "feed" && (
           <div className="max-w-lg mx-auto">
-            <h2 className="text-pink-400 text-xs mb-3">
-              LATEST DRAMA (COMPLEX-WIDE)
-            </h2>
-            <DramaFeed logs={dramaLogs} currentUserId={user._id} />
+            <h2 className="text-pink-400 text-xs mb-3">LATEST DRAMA (COMPLEX-WIDE)</h2>
+            {dramaLogs.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-gray-500 text-[10px]">No drama yet.</p>
+                <p className="text-gray-600 text-[9px] mt-1">Go find a sleeping avatar and start some beef!</p>
+              </div>
+            ) : (
+              <DramaFeed logs={dramaLogs} currentUserId={user._id} />
+            )}
           </div>
         )}
 
@@ -644,8 +694,7 @@ export default function Home() {
             <h2 className="text-pink-400 text-xs mb-3">YOUR BEEF HISTORY</h2>
             <DramaFeed
               logs={dramaLogs.filter(
-                (l) =>
-                  l.attackerId === user._id || l.defenderId === user._id
+                (l) => l.attackerId === user._id || l.defenderId === user._id
               )}
               currentUserId={user._id}
             />
@@ -653,30 +702,24 @@ export default function Home() {
         )}
       </div>
 
-      {/* ── Drama Encounter Modal ── */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/*  DRAMA ENCOUNTER MODAL                                       */}
+      {/* ══════════════════════════════════════════════════════════════ */}
       {showDrama && (
         <div className="fixed inset-0 z-40 bg-black/90 flex items-center justify-center p-4">
           <div className="bg-gray-950 border-2 border-red-600 rounded-lg p-6 w-full max-w-md space-y-4 animate-glitch">
-            <h2 className="text-red-500 text-sm text-center">
-              ENCOUNTER!
-            </h2>
+            <h2 className="text-red-500 text-sm text-center">ENCOUNTER!</h2>
             <div className="text-[9px] text-gray-400 text-center">
               <span className="text-cyan-400">{user.username}</span>
               {" walked up to "}
-              <span className="text-red-400">
-                {encounterTarget?.username}
-              </span>
+              <span className="text-red-400">{encounterTarget?.username}</span>
               {"'s sleeping avatar..."}
             </div>
 
             {isGenerating ? (
               <div className="text-center py-6">
-                <p className="text-yellow-400 text-[10px] animate-pulse">
-                  AI is generating insults...
-                </p>
-                <p className="text-gray-600 text-[8px] mt-2">
-                  (running locally in your browser)
-                </p>
+                <p className="text-yellow-400 text-[10px] animate-pulse">AI is generating insults...</p>
+                <p className="text-gray-600 text-[8px] mt-2">(running locally in your browser)</p>
               </div>
             ) : (
               <div className="bg-black rounded p-4 border border-red-900/50">
@@ -698,6 +741,66 @@ export default function Home() {
                 WALK AWAY (for now...)
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/*  TUTORIAL MODAL                                               */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {showTutorial && (
+        <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center p-4">
+          <div className="bg-gray-950 border-2 border-cyan-600 rounded-lg p-6 w-full max-w-md space-y-4">
+            <h2 className="text-cyan-400 text-sm text-center">HOW TO PLAY</h2>
+
+            <div className="space-y-3 text-[10px] text-gray-300 leading-relaxed">
+              <div className="flex gap-3 items-start">
+                <span className="text-2xl">🫵</span>
+                <div>
+                  <p className="text-cyan-400 font-bold">THAT'S YOU</p>
+                  <p className="text-gray-400">The cyan-highlighted avatar on the grid. Move with arrow keys or WASD (or the D-pad on mobile).</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-start">
+                <span className="text-2xl">😤</span>
+                <div>
+                  <p className="text-green-400 font-bold">ONLINE PLAYERS</p>
+                  <p className="text-gray-400">Other players who are currently active. You can see them moving around.</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-start">
+                <span className="text-2xl">💤</span>
+                <div>
+                  <p className="text-purple-400 font-bold">OFFLINE PLAYERS (TARGETS)</p>
+                  <p className="text-gray-400">Players who went offline. Walk next to one to trigger an AI-generated fight! The AI uses their custom personality to roast you.</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-start">
+                <span className="text-2xl">🧠</span>
+                <div>
+                  <p className="text-pink-400 font-bold">GO OFFLINE</p>
+                  <p className="text-gray-400">Set your personality prompt and go offline. Your AI avatar will roam the grid automatically, and other players can fight it. Check the Drama Feed to see what happened while you were away!</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 items-start">
+                <span className="text-2xl">📜</span>
+                <div>
+                  <p className="text-yellow-400 font-bold">DRAMA FEED</p>
+                  <p className="text-gray-400">All fights are saved. Check "My Beef" to see encounters involving your avatar.</p>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowTutorial(false)}
+              className="w-full bg-cyan-700 hover:bg-cyan-600 py-2 rounded text-[10px] transition-colors"
+            >
+              GOT IT — LET'S FIGHT
+            </button>
           </div>
         </div>
       )}
