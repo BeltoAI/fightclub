@@ -3,6 +3,11 @@ import getStripe, { PRICE_IDS } from "@/lib/stripe";
 import dbConnect from "@/lib/mongodb";
 import User from "@/models/User";
 
+// Force Node.js runtime (not Edge) — required for Stripe SDK connectivity on Vercel
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 30;
+
 // POST /api/stripe/checkout — create a Stripe Checkout session
 export async function POST(req) {
   try {
