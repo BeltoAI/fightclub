@@ -41,8 +41,8 @@ export async function POST(req) {
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const x = Math.floor(Math.random() * 20);
-    const y = Math.floor(Math.random() * 20);
+    const x = Math.floor(Math.random() * 10);
+    const y = Math.floor(Math.random() * 10);
 
     const user = await User.create({
       username,

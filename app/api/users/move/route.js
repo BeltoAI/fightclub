@@ -15,9 +15,9 @@ export async function PATCH(req) {
       );
     }
 
-    // Clamp to grid bounds (20x20)
-    const clampedX = Math.max(0, Math.min(19, x));
-    const clampedY = Math.max(0, Math.min(19, y));
+    // Clamp to grid bounds (10x10)
+    const clampedX = Math.max(0, Math.min(9, x));
+    const clampedY = Math.max(0, Math.min(9, y));
 
     const user = await User.findByIdAndUpdate(
       userId,

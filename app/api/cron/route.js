@@ -42,8 +42,8 @@ export async function GET(req) {
 
       if (dx === 0 && dy === 0) continue;
 
-      const newX = Math.max(0, Math.min(19, user.x + dx));
-      const newY = Math.max(0, Math.min(19, user.y + dy));
+      const newX = Math.max(0, Math.min(9, user.x + dx));
+      const newY = Math.max(0, Math.min(9, user.y + dy));
 
       if (newX !== user.x || newY !== user.y) {
         user.x = newX;
