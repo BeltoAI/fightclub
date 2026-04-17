@@ -1,30 +1,16 @@
 "use client";
 
 import { memo } from "react";
+import PixelAvatar from "./PixelAvatar";
 
 const GRID_SIZE = 20;
 
-const FLOOR_COLORS = {
-  1: "bg-red-900/70",
-  2: "bg-orange-900/70",
-  3: "bg-yellow-900/70",
-  4: "bg-green-900/70",
-  5: "bg-blue-900/70",
-  6: "bg-indigo-900/70",
-  7: "bg-purple-900/70",
+const FLOOR_BG = {
+  1: "#3e1111", 2: "#3e2511", 3: "#3e3511", 4: "#113e1a",
+  5: "#11243e", 6: "#1f113e", 7: "#2e113e",
 };
 
-const FLOOR_BORDERS = {
-  1: "border-red-500",
-  2: "border-orange-500",
-  3: "border-yellow-500",
-  4: "border-green-500",
-  5: "border-blue-500",
-  6: "border-indigo-500",
-  7: "border-purple-500",
-};
-
-function Grid({ users, currentUserId, encounterTargetId }) {
+function Grid({ users, currentUserId, encounterTargetId, onCellClick }) {
   // Build a lookup map: "x,y" -> user
   const posMap = {};
   users.forEach((u) => {
@@ -39,26 +25,51 @@ function Grid({ users, currentUserId, encounterTargetId }) {
       const isMe = occupant && occupant._id === currentUserId;
       const isTarget = occupant && occupant._id === encounterTargetId;
 
-      let cellClass =
-        "grid-cell w-full aspect-square flex items-center justify-center text-xs border border-gray-800/40 transition-all duration-100 ";
+      let bgColor = "transparent";
+      let borderColor = "rgba(255,255,255,0.04)";
+      let glowColor = undefined;
 
       if (isMe) {
-        cellClass += "ring-2 ring-cyan-400 bg-cyan-900/40 animate-pulse-fast ";
+        bgColor = "rgba(0,188,212,0.15)";
+        borderColor = "rgba(0,188,212,0.6)";
+        glowColor = "#00BCD4";
       } else if (isTarget) {
-        cellClass += "ring-2 ring-red-500 bg-red-900/60 animate-glitch ";
+        bgColor = "rgba(244,67,54,0.2)";
+        borderColor = "rgba(244,67,54,0.7)";
+        glowColor = "#F44336";
       } else if (occupant) {
-        cellClass += `${FLOOR_COLORS[occupant.floor] || "bg-gray-800/50"} `;
-        if (!occupant.isOnline) cellClass += "opacity-50 ";
-      } else {
-        cellClass += "bg-gray-900/30 ";
+        bgColor = FLOOR_BG[occupant.floor] || "rgba(255,255,255,0.03)";
+        borderColor = "rgba(255,255,255,0.06)";
       }
 
       cells.push(
-        <div key={key} className={cellClass} title={occupant ? `${occupant.username} (Floor ${occupant.floor})${!occupant.isOnline ? " [OFFLINE]" : ""}` : ""}>
+        <div
+          key={key}
+          onClick={() => occupant && !isMe && onCellClick?.(occupant)}
+          style={{
+            backgroundColor: bgColor,
+            borderColor: borderColor,
+            borderWidth: "1px",
+            borderStyle: "solid",
+          }}
+          className={`grid-cell w-full aspect-square flex items-center justify-center transition-all duration-100 ${
+            occupant && !isMe ? "cursor-pointer hover:brightness-125" : ""
+          } ${isTarget ? "animate-glitch" : ""} ${isMe ? "animate-pulse-fast" : ""}`}
+          title={
+            occupant
+              ? `${occupant.username} (Floor ${occupant.floor})${
+                  !occupant.isOnline ? " [OFFLINE]" : ""
+                } W:${occupant.wins || 0} L:${occupant.losses || 0}`
+              : ""
+          }
+        >
           {occupant && (
-            <span className="select-none" style={{ fontSize: "1rem" }}>
-              {isMe ? "🫵" : occupant.isOnline ? occupant.emoji : "💤"}
-            </span>
+            <PixelAvatar
+              avatar={occupant.avatar || {}}
+              size={24}
+              isOnline={occupant.isOnline}
+              glow={glowColor}
+            />
           )}
         </div>
       );
@@ -67,10 +78,11 @@ function Grid({ users, currentUserId, encounterTargetId }) {
 
   return (
     <div
-      className="grid border-2 border-pink-600/60 rounded"
+      className="grid border-2 border-pink-600/60 rounded bg-gray-950"
       style={{
         gridTemplateColumns: `repeat(${GRID_SIZE}, 1fr)`,
         maxWidth: "600px",
+        width: "100%",
       }}
     >
       {cells}

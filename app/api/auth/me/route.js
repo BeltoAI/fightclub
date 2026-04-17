@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import dbConnect from "@/lib/mongodb";
 import User from "@/models/User";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // GET /api/auth/me — restore session from cookie
@@ -16,17 +17,23 @@ export async function GET() {
     }
 
     await dbConnect();
-    const user = await User.findById(uid).lean();
+    const user = await User.findById(uid).select("-passwordHash").lean();
 
     if (!user) {
-      // Cookie points to deleted user — clear it
       const res = NextResponse.json({ user: null });
-      res.cookies.delete("fightclub_uid");
+      res.cookies.set("fightclub_uid", "", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 0,
+        path: "/",
+      });
       return res;
     }
 
     return NextResponse.json({ user });
   } catch (err) {
+    console.error("Auth/me error:", err);
     return NextResponse.json({ user: null });
   }
 }

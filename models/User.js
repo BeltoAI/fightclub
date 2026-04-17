@@ -1,5 +1,18 @@
 import mongoose from "mongoose";
 
+const AvatarSchema = new mongoose.Schema(
+  {
+    bodyColor: { type: String, default: "#4FC3F7" },
+    hairStyle: { type: Number, default: 0, min: 0, max: 7 },
+    hairColor: { type: String, default: "#222222" },
+    eyeStyle: { type: Number, default: 0, min: 0, max: 5 },
+    mouthStyle: { type: Number, default: 0, min: 0, max: 5 },
+    outfitColor: { type: String, default: "#E91E63" },
+    accessory: { type: Number, default: 0, min: 0, max: 6 },
+  },
+  { _id: false }
+);
+
 const UserSchema = new mongoose.Schema(
   {
     username: {
@@ -9,6 +22,10 @@ const UserSchema = new mongoose.Schema(
       trim: true,
       minlength: 2,
       maxlength: 24,
+    },
+    passwordHash: {
+      type: String,
+      required: true,
     },
     floor: {
       type: Number,
@@ -24,9 +41,9 @@ const UserSchema = new mongoose.Schema(
       default: "I'm just a chill resident. Don't start nothing.",
       maxlength: 500,
     },
-    emoji: {
-      type: String,
-      default: "😤",
+    avatar: {
+      type: AvatarSchema,
+      default: () => ({}),
     },
     wins: { type: Number, default: 0 },
     losses: { type: Number, default: 0 },
